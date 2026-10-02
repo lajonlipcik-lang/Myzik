@@ -1147,6 +1147,7 @@ def search_tracks(query: str) -> list[dict[str, Any]]:
         "socket_timeout": 25,
         "extract_flat": "in_playlist",
         "js_runtimes": {"node": {}},
+        "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
     }
     with yt_dlp.YoutubeDL(options) as downloader:
         data = downloader.extract_info(
@@ -1238,6 +1239,7 @@ def download_mp3(
         "socket_timeout": 30,
         "max_filesize": MAX_TELEGRAM_UPLOAD_BYTES,
         "js_runtimes": {"node": {}},
+        "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
         "match_filter": yt_dlp.utils.match_filter_func(
             f"duration <= {MAX_TRACK_DURATION_SECONDS}"
         ),
