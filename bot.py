@@ -103,6 +103,7 @@ TRANSLATIONS = {
             "Hi! I can find full tracks or identify a song from audio or video.\n\n"
             "Send a song title or artist to search. You can also send an audio file, "
             "voice message, or video; I'll recognize it with AudD and show full-track options.\n\n"
+            "Send a public TikTok or Instagram video/Reel link to receive the video and an MP3 copy.\n\n"
             "Use /language or the button below to change the interface language."
         ),
         "searching": "Searching the internet for your song…",
@@ -129,6 +130,10 @@ TRANSLATIONS = {
         "downloading": "Downloading “{title}” — {artist}…",
         "download_started": "Starting download: {title}…",
         "link_downloading": "Downloading audio from the video link…",
+        "social_link_downloading": "Downloading the video and MP3 from the social link…",
+        "social_link_downloaded": "Video and MP3 sent: {title}.",
+        "social_video_sent_audio_failed": "The video was sent, but I couldn't send its MP3.",
+        "unsupported_link": "That link isn't supported. Send a YouTube, TikTok, or Instagram link.",
         "downloaded": "Sent: {title} — {artist}.",
         "download_failed": "I couldn't download or send that track. It may be unavailable or too large for Telegram.",
         "language_error": "That language selection is no longer available. Open /language to choose again.",
@@ -183,6 +188,7 @@ TRANSLATIONS = {
             "Отправьте название песни или исполнителя для поиска. Также можно прислать "
             "аудио, голосовое сообщение или видео — я распознаю композицию через AudD "
             "и покажу варианты полного трека.\n\n"
+            "Отправьте публичную ссылку на видео TikTok или Reels в Instagram — пришлю видео и MP3.\n\n"
             "Чтобы сменить язык интерфейса, введите /language или нажмите кнопку ниже."
         ),
         "searching": "Ищу песню на просторах интернета…",
@@ -209,6 +215,10 @@ TRANSLATIONS = {
         "downloading": "Скачиваю «{title}» — {artist}…",
         "download_started": "Начинаю скачивание: {title}…",
         "link_downloading": "Скачиваю аудио по видеоссылке…",
+        "social_link_downloading": "Скачиваю видео и MP3 по ссылке…",
+        "social_link_downloaded": "Отправил видео и MP3: {title}.",
+        "social_video_sent_audio_failed": "Видео отправлено, но не удалось отправить MP3.",
+        "unsupported_link": "Эта ссылка не поддерживается. Пришлите ссылку YouTube, TikTok или Instagram.",
         "downloaded": "Отправил: {title} — {artist}.",
         "download_failed": "Не удалось скачать или отправить трек. Возможно, он недоступен или файл слишком большой для Telegram.",
         "language_error": "Этот выбор языка устарел. Откройте /language и выберите язык снова.",
@@ -265,6 +275,7 @@ TRANSLATIONS = {
             "Надішліть назву пісні або виконавця для пошуку. Також можна надіслати "
             "аудіо, голосове повідомлення або відео — я розпізнаю композицію через AudD "
             "і покажу варіанти повного треку.\n\n"
+            "Надішліть публічне посилання на відео TikTok або Reels в Instagram — надішлю відео та MP3.\n\n"
             "Щоб змінити мову інтерфейсу, введіть /language або натисніть кнопку нижче."
         ),
         "searching": "Шукаю вашу пісню в інтернеті…",
@@ -291,6 +302,10 @@ TRANSLATIONS = {
         "downloading": "Завантажую «{title}» — {artist}…",
         "download_started": "Починаю завантаження: {title}…",
         "link_downloading": "Завантажую аудіо за відеопосиланням…",
+        "social_link_downloading": "Завантажую відео та MP3 за посиланням…",
+        "social_link_downloaded": "Надіслав відео та MP3: {title}.",
+        "social_video_sent_audio_failed": "Відео надіслано, але не вдалося надіслати MP3.",
+        "unsupported_link": "Це посилання не підтримується. Надішліть посилання YouTube, TikTok або Instagram.",
         "downloaded": "Надіслав: {title} — {artist}.",
         "download_failed": "Не вдалося завантажити чи надіслати трек. Можливо, він недоступний або завеликий для Telegram.",
         "language_error": "Цей вибір мови застарів. Відкрийте /language та виберіть мову знову.",
@@ -1264,6 +1279,58 @@ def download_mp3(
     return mp3_path, thumbnail_path, info if isinstance(info, dict) else {}
 
 
+def download_social_video_and_mp3(
+    url: str,
+    output_dir: str,
+) -> tuple[Path, Path, dict[str, Any]]:
+    options = {
+        "format": "best[ext=mp4]/best",
+        "outtmpl": str(Path(output_dir) / "%(id)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 30,
+        "max_filesize": MAX_TELEGRAM_UPLOAD_BYTES,
+        "merge_output_format": "mp4",
+        "keepvideo": True,
+        "js_runtimes": {"node": {}},
+        "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
+        "match_filter": yt_dlp.utils.match_filter_func(
+            f"duration <= {MAX_TRACK_DURATION_SECONDS}"
+        ),
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
+    with yt_dlp.YoutubeDL(options) as downloader:
+        info = downloader.extract_info(url, download=True)
+
+    output_path = Path(output_dir)
+    video_files = [
+        path
+        for path in output_path.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+    ]
+    video_files.sort(key=lambda path: path.suffix.lower() != ".mp4")
+    mp3_files = list(output_path.glob("*.mp3"))
+    if not video_files:
+        raise DownloadError("The downloaded post did not contain a video file")
+    if not mp3_files:
+        raise DownloadError("MP3 conversion did not produce an output file")
+
+    video_path = video_files[0]
+    mp3_path = mp3_files[0]
+    if video_path.stat().st_size > MAX_TELEGRAM_UPLOAD_BYTES:
+        raise DownloadError("The video is too large to send in Telegram")
+    if mp3_path.stat().st_size > MAX_TELEGRAM_UPLOAD_BYTES:
+        raise DownloadError("The converted audio is too large to send in Telegram")
+    return video_path, mp3_path, info if isinstance(info, dict) else {}
+
+
 def make_search_keyboard(
     tracks: list[dict[str, Any]],
     search_id: str,
@@ -1414,6 +1481,132 @@ def _send_downloaded_track_worker(
                 status_message_id,
                 tr(user_id, "download_failed"),
             )
+
+
+def send_social_video_and_audio(
+    chat_id: int,
+    user_id: int,
+    url: str,
+) -> None:
+    status = send_message(chat_id, tr(user_id, "social_link_downloading"))
+    status_message_id = status.get("message_id")
+    submit_media_job(
+        _send_social_video_and_audio_worker,
+        chat_id,
+        user_id,
+        url,
+        status_message_id,
+        chat_id=chat_id,
+        user_id=user_id,
+        status_message_id=status_message_id,
+    )
+
+
+def _send_social_video_and_audio_worker(
+    chat_id: int,
+    user_id: int,
+    url: str,
+    status_message_id: int | None,
+) -> None:
+    video_sent = False
+    try:
+        telegram_call("sendChatAction", {"chat_id": chat_id, "action": "upload_video"})
+        with tempfile.TemporaryDirectory(prefix="social-media-download-") as temp_dir:
+            video_path, mp3_path, info = download_social_video_and_mp3(url, temp_dir)
+            title = str(
+                info.get("title") or video_path.stem or tr(user_id, "unknown_title")
+            )
+            artist = artist_for(info)
+            display_title = f"{title} — {artist}" if artist else title
+            filename_stem = re.sub(r'[\\/:*?"<>|]+', "-", title)[:100].strip(" .-")
+            filename_stem = filename_stem or "video"
+
+            video_is_mp4 = video_path.suffix.lower() == ".mp4"
+            video_method = "sendVideo" if video_is_mp4 else "sendDocument"
+            video_field = "video" if video_is_mp4 else "document"
+            video_filename = f"{filename_stem}{video_path.suffix.lower()}"
+            video_data: dict[str, Any] = {
+                "chat_id": chat_id,
+                "caption": display_title[:1024],
+            }
+            if video_is_mp4:
+                video_data["supports_streaming"] = True
+            video_mime_type = (
+                mimetypes.guess_type(video_filename)[0] or "application/octet-stream"
+            )
+            with video_path.open("rb") as video_file:
+                telegram_call(
+                    video_method,
+                    video_data,
+                    files={
+                        video_field: (video_filename, video_file, video_mime_type)
+                    },
+                    timeout=120,
+                )
+            video_sent = True
+
+            telegram_call("sendChatAction", {"chat_id": chat_id, "action": "upload_audio"})
+            audio_filename = f"{filename_stem}.mp3"
+            audio_data = {
+                "chat_id": chat_id,
+                "title": title[:64],
+                "performer": artist[:64],
+                "caption": display_title[:1024],
+            }
+            with mp3_path.open("rb") as audio_file:
+                audio_message = telegram_call(
+                    "sendAudio",
+                    audio_data,
+                    files={"audio": (audio_filename, audio_file, "audio/mpeg")},
+                    timeout=120,
+                )
+
+        if isinstance(audio_message, dict):
+            audio = audio_message.get("audio")
+            sent_message_id = audio_message.get("message_id")
+            file_id = audio.get("file_id") if isinstance(audio, dict) else None
+            if file_id and sent_message_id:
+                try:
+                    reference_id = register_sent_audio(
+                        str(file_id),
+                        display_title,
+                        url,
+                    )
+                    telegram_call(
+                        "editMessageReplyMarkup",
+                        {
+                            "chat_id": chat_id,
+                            "message_id": sent_message_id,
+                            "reply_markup": make_sent_audio_keyboard(
+                                user_id,
+                                reference_id,
+                                display_title,
+                                url,
+                            ),
+                        },
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "Could not attach playlist controls to social audio (%s)",
+                        type(error).__name__,
+                    )
+
+        if status_message_id:
+            edit_message(
+                chat_id,
+                status_message_id,
+                tr(user_id, "social_link_downloaded", title=title),
+            )
+    except Exception as error:
+        logger.warning(
+            "Social video/audio download or Telegram upload failed: %s",
+            safe_error_summary(error),
+        )
+        if status_message_id:
+            failure_key = (
+                "social_video_sent_audio_failed" if video_sent else "download_failed"
+            )
+            edit_message(chat_id, status_message_id, tr(user_id, failure_key))
 
 
 def run_search(
@@ -1766,6 +1959,17 @@ def supported_video_url(text: str) -> str | None:
     return None
 
 
+def is_social_media_url(url: str) -> bool:
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(
+        host == domain or host.endswith(f".{domain}")
+        for domain in ("tiktok.com", "instagram.com", "instagr.am")
+    )
+
+
 def handle_message(message: dict[str, Any]) -> None:
     chat_id = int(message["chat"]["id"])
     sender = message.get("from") or {}
@@ -1835,12 +2039,18 @@ def process_message(message: dict[str, Any]) -> None:
         return
     video_url = supported_video_url(text)
     if video_url:
+        if is_social_media_url(video_url):
+            send_social_video_and_audio(chat_id, user_id, video_url)
+            return
         send_downloaded_track(
             chat_id,
             user_id,
             {"url": video_url},
             status_text=tr(user_id, "link_downloading"),
         )
+        return
+    if text.lower().startswith(("http://", "https://")):
+        send_message(chat_id, tr(user_id, "unsupported_link"))
         return
     if len(text) > 200:
         send_message(chat_id, tr(user_id, "query_too_long"))

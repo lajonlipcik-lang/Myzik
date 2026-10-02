@@ -35,10 +35,11 @@ A Telegram bot for music search, audio recognition, downloads, and personal play
 
 - The bot uses Telegram long polling and runs as its own persistent workflow.
 - SQLite stores playlists and sent-audio references; use persistent storage for playlists that must survive redeployments.
+- A health endpoint is a status check, not an uptime mechanism. Use a Reserved VM deployment for continuous polling; Autoscale can sleep while idle.
 
 ## Product
 
-- Search for tracks, download audio, recognize uploaded music with AudD, manage a personal playlist, and use the bot in Russian, English, or Ukrainian.
+- Search for tracks, download audio, recognize uploaded music with AudD, download public TikTok/Instagram videos as MP4 plus MP3, manage a personal playlist, and use the bot in Russian, English, or Ukrainian.
 
 ## User preferences
 

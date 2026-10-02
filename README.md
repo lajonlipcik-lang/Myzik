@@ -1,6 +1,6 @@
 # Telegram Music Bot
 
-Telegram bot for searching and downloading audio, recognizing music from uploaded audio/video with AudD, and saving tracks to a personal playlist.
+Telegram bot for searching and downloading audio, recognizing music from uploaded audio/video with AudD, and saving tracks to a personal playlist. Public TikTok and Instagram video links are sent as both video and MP3.
 
 ## Start
 
@@ -9,6 +9,14 @@ Telegram bot for searching and downloading audio, recognizing music from uploade
 3. Run the **Telegram Music Bot** workflow. It starts `bot.py` and exposes a small health check on port `9000`.
 
 The bot uses long polling. Do not run another copy with the same Telegram token at the same time.
+
+## Supported links and clients
+
+- Public TikTok videos and Instagram posts/Reels: sends the video plus an MP3 soundtrack.
+- YouTube and the other existing supported sources: keeps the existing audio-download flow.
+- Arbitrary URLs are rejected; only known supported hosts are passed to `yt-dlp`.
+- Telegram sends standard MP4/MP3 files, which work in the iOS, Android, and Windows apps. The bot does not impersonate those devices or sign in to private accounts.
+- Private, login-gated, removed, or otherwise unavailable posts cannot be downloaded by this bot.
 
 ## Features
 
@@ -19,5 +27,9 @@ The bot uses long polling. Do not run another copy with the same Telegram token 
 - Bounded download queues, upload-size limits, and a health endpoint.
 
 The SQLite database is stored locally as `music_bot.sqlite3`. Keep a persistent deployment volume if playlists must survive restarts or redeployments.
+
+## Replit uptime
+
+The health endpoint reports whether the process is running; it does not keep an Autoscale deployment awake. Replit's Reserved VM deployment is the option for a continuously running Telegram bot. The current project workflow is for development; it has not yet been set up as a published Reserved VM deployment.
 
 Use downloads only for material you own or have permission to download, and follow the source platform's terms.
