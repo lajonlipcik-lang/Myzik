@@ -47,3 +47,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Python bot
+__pycache__/
+*.py[cod]
+.pythonlibs/
+music_bot.sqlite3
+music_bot.sqlite3-shm
+music_bot.sqlite3-wal

@@ -1,19 +1,23 @@
-# [Project name]
+# Telegram Music Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A Telegram bot for music search, audio recognition, downloads, and personal playlists.
 
 ## Run & Operate
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `PORT=9000 python bot.py` — run the Telegram music bot and its health endpoint
 - `pnpm run typecheck` — full typecheck across all packages
+- `python -m py_compile bot.py` — check the bot's Python syntax
+- `pip install -r requirements.txt` — install the bot's Python dependencies
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required Replit Secrets: `TELEGRAM_BOT_TOKEN`, `AUDD_API_KEY`
+- The bot must be an administrator of `@Musiccommomru`; startup intentionally fails if it cannot verify channel access.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
+- pnpm workspaces, Node.js 24, TypeScript 5.9; Python 3.11 for the Telegram bot
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
 - Validation: Zod (`zod/v4`), `drizzle-zod`
@@ -22,15 +26,19 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `bot.py` — Telegram bot logic, inherited from the supplied project
+- `requirements.txt` — Python dependencies
+- `music_bot.sqlite3` — local SQLite playlist database created at runtime
+- `artifacts/api-server` — shared API service
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The bot uses Telegram long polling and runs as its own persistent workflow.
+- SQLite stores playlists and sent-audio references; use persistent storage for playlists that must survive redeployments.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Search for tracks, download audio, recognize uploaded music with AudD, manage a personal playlist, and use the bot in Russian, English, or Ukrainian.
 
 ## User preferences
 
@@ -38,7 +46,8 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Only one process should poll Telegram updates for a given bot token.
+- The bot checks membership against `@Musiccommomru` and requires administrator access there.
 
 ## Pointers
 
