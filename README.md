@@ -4,7 +4,7 @@ Telegram bot for searching and downloading audio, recognizing music from uploade
 
 ## Start
 
-1. Add the `TELEGRAM_BOT_TOKEN` and `AUDD_API_KEY` values using Replit Secrets. Add `PROXY_URL` there if yt-dlp should use a proxy. Do not put secret values in source files or chat.
+1. Add the required `TELEGRAM_BOT_TOKEN` and `AUDD_API_KEY` values using Replit Secrets. Add `YOUTUBE_API_KEY` to enable YouTube Data API v3 search; without it, the bot logs a warning and uses yt-dlp search as a fallback. Add `PROXY_URL` if yt-dlp should use a proxy. Do not put secret values in source files or chat.
 2. Add the bot as an administrator to `@Musiccommomru`. The bot checks channel membership and will not start unless it can access the channel.
 3. Run the **Telegram Music Bot** workflow. It starts `bot.py` and exposes a small health check on port `9000`.
 
@@ -12,8 +12,8 @@ The bot uses long polling. Do not run another copy with the same Telegram token 
 
 ## Supported links and clients
 
-- Public TikTok videos and Instagram posts/Reels: sends the video plus an MP3 soundtrack.
-- YouTube and the other existing supported sources: keeps the existing audio-download flow.
+- Public TikTok videos and Instagram posts/Reels: tries Cobalt first to send the video plus an MP3 soundtrack, then falls back to yt-dlp if Cobalt fails.
+- YouTube search uses the Data API when `YOUTUBE_API_KEY` is configured; yt-dlp remains the search fallback. Audio downloads try Cobalt first and fall back to yt-dlp.
 - Arbitrary URLs are rejected; only known supported hosts are passed to `yt-dlp`.
 - Telegram sends standard MP4/MP3 files, which work in the iOS, Android, and Windows apps. The bot does not impersonate those devices or sign in to private accounts.
 - Private, login-gated, removed, or otherwise unavailable posts cannot be downloaded by this bot.
@@ -21,8 +21,9 @@ The bot uses long polling. Do not run another copy with the same Telegram token 
 ## Features
 
 - Search YouTube results by song or artist and choose a track to download.
+- Show and replay the ten most downloaded tracks.
 - Recognize uploaded audio, voice messages, and videos through AudD.
-- Personal playlists stored in SQLite.
+- Personal playlists and download statistics stored in SQLite.
 - Russian, English, and Ukrainian interface.
 - Bounded download queues, upload-size limits, and a health endpoint.
 

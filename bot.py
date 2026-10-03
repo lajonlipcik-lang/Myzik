@@ -1,8 +1,12 @@
 """Telegram bot for music search, download, and recognition.
 
-Required environment variables (set them in Render's Environment settings):
+Required environment variables (set them in Replit Secrets):
     TELEGRAM_BOT_TOKEN
     AUDD_API_KEY
+
+Optional environment variables:
+    YOUTUBE_API_KEY
+    PROXY_URL
 
 The HTTP health server binds to PORT, defaulting to 10000.
 """
@@ -38,14 +42,17 @@ CHANNEL_URL = "https://t.me/Musiccommomru"
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 AUDD_API_KEY = os.getenv("AUDD_API_KEY")
+YOUTUBE_API_KEY = (os.getenv("YOUTUBE_API_KEY") or "").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 AUDD_ENDPOINT = "https://api.audd.io/"
+YOUTUBE_SEARCH_ENDPOINT = "https://www.googleapis.com/youtube/v3/search"
+COBALT_API_ENDPOINT = "https://api.cobalt.tools/api/json"
 
 MAX_TELEGRAM_DOWNLOAD_BYTES = 20 * 1024 * 1024
 MAX_TELEGRAM_UPLOAD_BYTES = 45 * 1024 * 1024
 MAX_TELEGRAM_THUMBNAIL_BYTES = 200_000
 MAX_TRACK_DURATION_SECONDS = 60 * 60
-MAX_SEARCH_RESULTS = 10
+MAX_SEARCH_RESULTS = 25
 MAX_CONCURRENT_UPDATES = 8
 MAX_QUEUED_UPDATES = 32
 MAX_CONCURRENT_MEDIA_JOBS = 2
@@ -141,6 +148,12 @@ TRANSLATIONS = {
         "search_button": "🔎 Search a song",
         "search_prompt": "Send a song title or artist to search.",
         "language_button_hint": "Change the interface language:",
+        "top_button": "🔥 Most downloaded",
+        "top_header": "🔥 Top 10 most downloaded tracks:\n\n",
+        "top_empty": "No one has downloaded anything yet. Be the first!",
+        "top_line": "{n}. {title} — {artist}  ·  {count} times",
+        "top_play_hint": "Tap a number to download the track again.",
+        "top_track_unavailable": "This track is unavailable. Find it again.",
         "playlist_empty": (
             "Your personal playlist\n"
             "Your favorite tracks will be kept here so you can listen any time without searching again.\n\n"
@@ -226,6 +239,12 @@ TRANSLATIONS = {
         "search_button": "🔎 Поиск песни",
         "search_prompt": "Отправьте название песни или исполнителя для поиска.",
         "language_button_hint": "Язык интерфейса:",
+        "top_button": "🔥 Топ скачиваемых",
+        "top_header": "🔥 Топ-10 самых скачиваемых треков:\n\n",
+        "top_empty": "Пока никто ничего не скачивал. Будь первым!",
+        "top_line": "{n}. {title} — {artist}  ·  {count} раз",
+        "top_play_hint": "Нажми номер, чтобы скачать трек снова.",
+        "top_track_unavailable": "Трек недоступен. Найди его заново.",
         "playlist_empty": (
             "Ваш персональный плейлист\n"
             "Здесь будут храниться ваши любимые треки, чтобы вы могли послушать их "
@@ -313,6 +332,12 @@ TRANSLATIONS = {
         "search_button": "🔎 Пошук пісні",
         "search_prompt": "Надішліть назву пісні або виконавця для пошуку.",
         "language_button_hint": "Мова інтерфейсу:",
+        "top_button": "🔥 Найпопулярніші",
+        "top_header": "🔥 Топ-10 найчастіше завантажуваних треків:\n\n",
+        "top_empty": "Поки ніхто нічого не завантажував. Будь першим!",
+        "top_line": "{n}. {title} — {artist}  ·  {count} разів",
+        "top_play_hint": "Натисни номер, щоб завантажити трек знову.",
+        "top_track_unavailable": "Трек недоступний. Знайди його ще раз.",
         "playlist_empty": (
             "Ваш персональний плейлист\n"
             "Тут зберігатимуться ваші улюблені треки, щоб ви могли слухати їх будь-коли "
@@ -363,6 +388,8 @@ logger = logging.getLogger("music_bot")
 SEARCH_STATE: dict[str, dict[str, Any]] = {}
 SEARCH_GENERATIONS: dict[str, str] = {}
 SEARCH_STATE_LOCK = threading.Lock()
+TOP_DOWNLOAD_STATE: dict[str, list[dict[str, Any]]] = {}
+TOP_DOWNLOAD_STATE_LOCK = threading.Lock()
 PENDING_SUBSCRIPTION_ACTIONS: dict[str, dict[str, Any]] = {}
 MEDIA_JOB_CAPACITY = threading.BoundedSemaphore(
     MAX_CONCURRENT_MEDIA_JOBS + MAX_QUEUED_MEDIA_JOBS
@@ -381,9 +408,16 @@ class TelegramAPIError(RuntimeError):
     """Raised when Telegram's Bot API returns an error response."""
 
 
+class CobaltError(RuntimeError):
+    """Raised when the Cobalt API cannot provide a usable media download."""
+
+
 def safe_error_summary(error: Exception) -> str:
     if isinstance(error, TelegramAPIError):
         return str(error)
+    if isinstance(error, CobaltError):
+        message = re.sub(r"https?://\S+", "[URL]", str(error))
+        return f"CobaltError: {message[:300]}"
     if isinstance(error, requests.RequestException):
         return f"{type(error).__name__} while calling an external service"
     if isinstance(error, DownloadError):
@@ -529,6 +563,25 @@ def initialize_playlist_database() -> None:
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS download_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                source_url TEXT,
+                count INTEGER NOT NULL DEFAULT 0,
+                last_downloaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (title, artist)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_download_stats_count
+            ON download_stats (count DESC)
+            """
+        )
 
 
 def register_sent_audio(
@@ -552,6 +605,49 @@ def register_sent_audio(
             (MAX_SENT_AUDIO_REFERENCES,),
         )
     return reference_id
+
+
+def register_download(
+    title: str,
+    artist: str,
+    source_url: str | None,
+) -> None:
+    normalized_title = str(title).strip() or "Unknown title"
+    normalized_artist = str(artist).strip() or "Unknown artist"
+    normalized_url = str(source_url or "").strip() or None
+    with playlist_database() as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO download_stats (title, artist, source_url, count)
+            VALUES (?, ?, ?, 0)
+            """,
+            (normalized_title, normalized_artist, normalized_url),
+        )
+        connection.execute(
+            """
+            UPDATE download_stats
+            SET count = count + 1,
+                last_downloaded_at = CURRENT_TIMESTAMP,
+                source_url = COALESCE(?, source_url)
+            WHERE title = ? AND artist = ?
+            """,
+            (normalized_url, normalized_title, normalized_artist),
+        )
+
+
+def get_top_downloads(limit: int = 10) -> list[dict[str, Any]]:
+    result_limit = max(0, int(limit))
+    with playlist_database() as connection:
+        rows = connection.execute(
+            """
+            SELECT title, artist, count, source_url
+            FROM download_stats
+            ORDER BY count DESC, last_downloaded_at DESC
+            LIMIT ?
+            """,
+            (result_limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_sent_audio(reference_id: int) -> dict[str, Any] | None:
@@ -657,7 +753,8 @@ def main_menu_keyboard(user_id: int) -> dict[str, Any]:
             [
                 {"text": tr(user_id, "search_button")},
                 {"text": tr(user_id, "playlist_button")},
-            ]
+            ],
+            [{"text": tr(user_id, "top_button")}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -686,6 +783,43 @@ def state_key(chat_id: int, user_id: int) -> str:
     return f"{chat_id}:{user_id}"
 
 
+def show_top_downloads(chat_id: int, user_id: int) -> None:
+    tracks = get_top_downloads(10)
+    key = state_key(chat_id, user_id)
+    with TOP_DOWNLOAD_STATE_LOCK:
+        TOP_DOWNLOAD_STATE[key] = tracks
+
+    if not tracks:
+        send_message(chat_id, tr(user_id, "top_empty"))
+        return
+
+    lines = [
+        tr(
+            user_id,
+            "top_line",
+            n=index + 1,
+            title=" ".join(str(track.get("title") or "").split())[:150],
+            artist=" ".join(str(track.get("artist") or "").split())[:80],
+            count=int(track.get("count") or 0),
+        )
+        for index, track in enumerate(tracks)
+    ]
+    buttons = [
+        {"text": str(index + 1), "callback_data": f"top_play_{index}"}
+        for index in range(len(tracks))
+    ]
+    keyboard = [
+        buttons[index : index + 5] for index in range(0, len(buttons), 5)
+    ]
+    text = (
+        tr(user_id, "top_header")
+        + "\n".join(lines)
+        + "\n\n"
+        + tr(user_id, "top_play_hint")
+    )
+    send_message(chat_id, text, reply_markup={"inline_keyboard": keyboard})
+
+
 def is_expensive_message(message: dict[str, Any], user_id: int) -> bool:
     if any(
         message.get(field_name)
@@ -699,6 +833,7 @@ def is_expensive_message(message: dict[str, Any], user_id: int) -> bool:
     return text not in {
         tr(user_id, "playlist_button"),
         tr(user_id, "search_button"),
+        tr(user_id, "top_button"),
     }
 
 
@@ -1153,7 +1288,7 @@ def artist_for(entry: dict[str, Any]) -> str:
     )
 
 
-def search_tracks(query: str) -> list[dict[str, Any]]:
+def search_tracks_legacy(query: str) -> list[dict[str, Any]]:
     options = {
         "quiet": True,
         "no_warnings": True,
@@ -1191,6 +1326,61 @@ def search_tracks(query: str) -> list[dict[str, Any]]:
             }
         )
     return tracks
+
+
+def search_tracks(query: str) -> list[dict[str, Any]]:
+    if not YOUTUBE_API_KEY:
+        return search_tracks_legacy(query)
+
+    try:
+        response = requests.get(
+            YOUTUBE_SEARCH_ENDPOINT,
+            params={
+                "part": "snippet",
+                "type": "video",
+                "maxResults": MAX_SEARCH_RESULTS,
+                "q": query,
+                "key": YOUTUBE_API_KEY,
+            },
+            timeout=25,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError) as error:
+        logger.warning(
+            "YouTube Data API search failed (%s); using yt-dlp fallback",
+            type(error).__name__,
+        )
+        return search_tracks_legacy(query)
+
+    items = data.get("items") if isinstance(data, dict) else None
+    tracks: list[dict[str, Any]] = []
+    if isinstance(items, list):
+        for item in items[:MAX_SEARCH_RESULTS]:
+            if not isinstance(item, dict):
+                continue
+            video_data = item.get("id") or {}
+            snippet = item.get("snippet") or {}
+            video_id = video_data.get("videoId") if isinstance(video_data, dict) else None
+            if not video_id or not isinstance(snippet, dict):
+                continue
+            tracks.append(
+                {
+                    "id": str(video_id),
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "title": str(snippet.get("title") or ""),
+                    "artist": str(snippet.get("channelTitle") or ""),
+                    "duration": None,
+                }
+            )
+
+    if tracks:
+        return tracks
+
+    logger.warning(
+        "YouTube Data API returned no usable results; using yt-dlp fallback"
+    )
+    return search_tracks_legacy(query)
 
 
 def make_telegram_thumbnail(output_dir: str) -> Path | None:
@@ -1241,7 +1431,157 @@ def make_telegram_thumbnail(output_dir: str) -> Path | None:
     return None
 
 
-def download_mp3(
+def _download_cobalt_media(
+    payload: dict[str, Any],
+    output_dir: str,
+    filename_stem: str,
+    *,
+    forced_extension: str | None = None,
+) -> Path:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = requests.post(
+            COBALT_API_ENDPOINT,
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+        cobalt_data = response.json()
+    except requests.RequestException as error:
+        raise CobaltError("Cobalt API request failed") from error
+    except ValueError as error:
+        raise CobaltError("Cobalt returned invalid JSON") from error
+
+    if not isinstance(cobalt_data, dict):
+        raise CobaltError("Cobalt returned an invalid response")
+    download_url = cobalt_data.get("url")
+    if not isinstance(download_url, str) or not download_url.strip():
+        raise CobaltError("Cobalt response did not include a media URL")
+    parsed_download_url = urlsplit(download_url)
+    if parsed_download_url.scheme not in {"http", "https"} or not parsed_download_url.netloc:
+        raise CobaltError("Cobalt returned an invalid media URL")
+
+    output_directory = Path(output_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    partial_path = output_directory / f"{filename_stem}.part"
+    try:
+        with requests.get(
+            download_url,
+            stream=True,
+            timeout=(15, 60),
+        ) as media_response:
+            media_response.raise_for_status()
+            content_length = media_response.headers.get("Content-Length")
+            try:
+                expected_size = int(content_length) if content_length else None
+            except (TypeError, ValueError):
+                expected_size = None
+            if (
+                expected_size is not None
+                and expected_size > MAX_TELEGRAM_UPLOAD_BYTES
+            ):
+                raise CobaltError("Cobalt media file exceeds the Telegram size limit")
+
+            extension = forced_extension
+            if extension is None:
+                extension = Path(parsed_download_url.path).suffix.lower()
+                content_type = (
+                    media_response.headers.get("Content-Type", "")
+                    .split(";", maxsplit=1)[0]
+                    .strip()
+                    .lower()
+                )
+                if extension not in SUPPORTED_VIDEO_EXTENSIONS:
+                    guessed_extension = mimetypes.guess_extension(content_type) or ""
+                    extension = (
+                        guessed_extension
+                        if guessed_extension in SUPPORTED_VIDEO_EXTENSIONS
+                        else ".mp4"
+                    )
+
+            output_path = output_directory / f"{filename_stem}{extension}"
+            total_bytes = 0
+            with partial_path.open("wb") as output_file:
+                for chunk in media_response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_TELEGRAM_UPLOAD_BYTES:
+                        raise CobaltError(
+                            "Cobalt media file exceeds the Telegram size limit"
+                        )
+                    output_file.write(chunk)
+
+            if total_bytes == 0:
+                raise CobaltError("Cobalt returned an empty media file")
+            partial_path.replace(output_path)
+            return output_path
+    except requests.RequestException as error:
+        raise CobaltError("Cobalt media download failed") from error
+    finally:
+        if partial_path.exists():
+            partial_path.unlink()
+
+
+def download_via_cobalt(video_url: str, output_dir: str) -> Path:
+    return _download_cobalt_media(
+        {
+            "url": video_url,
+            "isAudioOnly": True,
+            "aFormat": "mp3",
+        },
+        output_dir,
+        "track",
+        forced_extension=".mp3",
+    )
+
+
+def download_video_via_cobalt(video_url: str, output_dir: str) -> Path:
+    return _download_cobalt_media(
+        {
+            "url": video_url,
+            "isAudioOnly": False,
+            "vQuality": "720",
+        },
+        output_dir,
+        "cobalt-video",
+    )
+
+
+def _validate_cobalt_duration(media_path: Path) -> None:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(media_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CobaltError("Could not inspect Cobalt media duration") from error
+
+    try:
+        duration = float(result.stdout.strip())
+    except (AttributeError, TypeError, ValueError) as error:
+        raise CobaltError("Cobalt media duration could not be determined") from error
+    if duration > MAX_TRACK_DURATION_SECONDS:
+        raise CobaltError("Cobalt media exceeds the maximum track duration")
+
+
+def download_mp3_legacy(
     track: dict[str, Any],
     output_dir: str,
 ) -> tuple[Path, Path | None, dict[str, Any]]:
@@ -1281,7 +1621,28 @@ def download_mp3(
     return mp3_path, thumbnail_path, info if isinstance(info, dict) else {}
 
 
-def download_social_video_and_mp3(
+def download_mp3(
+    track: dict[str, Any],
+    output_dir: str,
+) -> tuple[Path, Path | None, dict[str, Any]]:
+    try:
+        mp3_path = download_via_cobalt(str(track.get("url") or ""), output_dir)
+        _validate_cobalt_duration(mp3_path)
+    except CobaltError as error:
+        logger.warning(
+            "Cobalt audio download failed (%s); using yt-dlp fallback",
+            safe_error_summary(error),
+        )
+        return download_mp3_legacy(track, output_dir)
+
+    info = {
+        "title": str(track.get("title") or ""),
+        "artist": str(track.get("artist") or ""),
+    }
+    return mp3_path, None, info
+
+
+def download_social_video_and_mp3_legacy(
     url: str,
     output_dir: str,
 ) -> tuple[Path, Path, dict[str, Any]]:
@@ -1334,6 +1695,64 @@ def download_social_video_and_mp3(
     return video_path, mp3_path, info if isinstance(info, dict) else {}
 
 
+def _extract_mp3_from_video(video_path: Path, output_dir: str) -> Path:
+    mp3_path = Path(output_dir) / "track.mp3"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(video_path),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-codec:a",
+                "libmp3lame",
+                "-b:a",
+                "192k",
+                str(mp3_path),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise CobaltError("Could not extract MP3 audio from the Cobalt video") from error
+
+    if not mp3_path.exists() or mp3_path.stat().st_size == 0:
+        raise CobaltError("Cobalt video did not produce an MP3 file")
+    if mp3_path.stat().st_size > MAX_TELEGRAM_UPLOAD_BYTES:
+        raise CobaltError("Cobalt MP3 file exceeds the Telegram size limit")
+    return mp3_path
+
+
+def download_social_video_and_mp3(
+    url: str,
+    output_dir: str,
+) -> tuple[Path, Path, dict[str, Any]]:
+    video_path: Path | None = None
+    mp3_path = Path(output_dir) / "track.mp3"
+    try:
+        video_path = download_video_via_cobalt(url, output_dir)
+        _validate_cobalt_duration(video_path)
+        mp3_path = _extract_mp3_from_video(video_path, output_dir)
+        title = Path(urlsplit(url).path.rstrip("/")).name or video_path.stem
+        return video_path, mp3_path, {"title": title}
+    except (CobaltError, DownloadError) as error:
+        logger.warning(
+            "Cobalt social download failed (%s); using yt-dlp fallback",
+            safe_error_summary(error),
+        )
+        for partial in (video_path, mp3_path):
+            if partial and partial.exists():
+                partial.unlink()
+        return download_social_video_and_mp3_legacy(url, output_dir)
+
+
 def make_search_keyboard(
     tracks: list[dict[str, Any]],
     search_id: str,
@@ -1343,9 +1762,9 @@ def make_search_keyboard(
         buttons.append(
             {"text": str(index + 1), "callback_data": f"d:{search_id}:{index}"}
         )
-    keyboard = [buttons[:5]]
-    if len(buttons) > 5:
-        keyboard.append(buttons[5:10])
+    keyboard = [
+        buttons[index : index + 5] for index in range(0, len(buttons), 5)
+    ]
     return {"inline_keyboard": keyboard}
 
 
@@ -1437,12 +1856,23 @@ def _send_downloaded_track_worker(
                     )
 
         if isinstance(audio_message, dict):
+            display_title = f"{artist} — {title}"
+            try:
+                register_download(
+                    title,
+                    artist,
+                    str(track.get("url") or "") or None,
+                )
+            except Exception as error:
+                logger.warning(
+                    "Could not record download statistics (%s)",
+                    safe_error_summary(error),
+                )
             audio = audio_message.get("audio")
             sent_message_id = audio_message.get("message_id")
             file_id = audio.get("file_id") if isinstance(audio, dict) else None
             if file_id and sent_message_id:
                 try:
-                    display_title = f"{artist} — {title}"
                     reference_id = register_sent_audio(
                         str(file_id),
                         display_title,
@@ -1565,6 +1995,17 @@ def _send_social_video_and_audio_worker(
                 )
 
         if isinstance(audio_message, dict):
+            try:
+                register_download(
+                    title,
+                    artist or tr(user_id, "unknown_artist"),
+                    url,
+                )
+            except Exception as error:
+                logger.warning(
+                    "Could not record social download statistics (%s)",
+                    safe_error_summary(error),
+                )
             audio = audio_message.get("audio")
             sent_message_id = audio_message.get("message_id")
             file_id = audio.get("file_id") if isinstance(audio, dict) else None
@@ -1658,7 +2099,7 @@ def _run_search_worker(
     try:
         tracks = search_tracks(query)
     except Exception:
-        logger.exception("yt-dlp track search failed")
+        logger.exception("Track search failed")
         edit_message(
             chat_id,
             message_id,
@@ -2034,6 +2475,9 @@ def process_message(message: dict[str, Any]) -> None:
     if command in ("/playlist", "/myplaylist") or text == tr(user_id, "playlist_button"):
         show_playlist(chat_id, user_id)
         return
+    if text == tr(user_id, "top_button"):
+        show_top_downloads(chat_id, user_id)
+        return
     if text == tr(user_id, "search_button"):
         send_message(chat_id, tr(user_id, "search_prompt"))
         return
@@ -2388,6 +2832,65 @@ def process_callback(callback: dict[str, Any]) -> None:
         answer_callback(callback_id)
         return
 
+    if data.startswith("top_play_"):
+        index_text = data.removeprefix("top_play_")
+        try:
+            track_index = int(index_text)
+        except ValueError:
+            answer_callback(
+                callback_id,
+                text=tr(user_id, "invalid_choice"),
+                show_alert=True,
+            )
+            return
+        if track_index < 0:
+            answer_callback(
+                callback_id,
+                text=tr(user_id, "invalid_choice"),
+                show_alert=True,
+            )
+            return
+
+        with TOP_DOWNLOAD_STATE_LOCK:
+            top_tracks = TOP_DOWNLOAD_STATE.get(key) or []
+        try:
+            track = top_tracks[track_index]
+        except IndexError:
+            answer_callback(
+                callback_id,
+                text=tr(user_id, "choose_track"),
+                show_alert=True,
+            )
+            return
+
+        source_url = str(track.get("source_url") or "").strip()
+        if not source_url:
+            answer_callback(
+                callback_id,
+                text=tr(user_id, "top_track_unavailable"),
+                show_alert=True,
+            )
+            return
+
+        answer_callback(
+            callback_id,
+            text=tr(
+                user_id,
+                "download_started",
+                title=str(track.get("title") or tr(user_id, "unknown_title"))[:100],
+            ),
+        )
+        send_downloaded_track(
+            chat_id,
+            user_id,
+            {
+                "url": source_url,
+                "title": str(track.get("title") or ""),
+                "artist": str(track.get("artist") or ""),
+            },
+        )
+        return
+
     if process_playlist_callback(
         callback,
         callback_id=callback_id,
@@ -2589,6 +3092,11 @@ def start_health_server() -> tuple[ThreadingHTTPServer, threading.Thread]:
 
 
 def main() -> None:
+    if not YOUTUBE_API_KEY:
+        logger.warning(
+            "YOUTUBE_API_KEY is not set; YouTube search will use the yt-dlp fallback"
+        )
+
     missing = [
         name
         for name, value in (
