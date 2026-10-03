@@ -34,6 +34,7 @@ A Telegram bot for music search, audio recognition, downloads, and personal play
 ## Architecture decisions
 
 - The bot uses Telegram long polling and runs as its own persistent workflow.
+- Production is configured for a Reserved VM; its API artifact production command starts the bot and API server together.
 - SQLite stores playlists and sent-audio references; use persistent storage for playlists that must survive redeployments.
 - A health endpoint is a status check, not an uptime mechanism. Use a Reserved VM deployment for continuous polling; Autoscale can sleep while idle.
 

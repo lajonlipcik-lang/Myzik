@@ -4,7 +4,7 @@ Telegram bot for searching and downloading audio, recognizing music from uploade
 
 ## Start
 
-1. Add the `TELEGRAM_BOT_TOKEN` and `AUDD_API_KEY` values using Replit Secrets. Do not put either value in source files or chat.
+1. Add the `TELEGRAM_BOT_TOKEN` and `AUDD_API_KEY` values using Replit Secrets. Add `PROXY_URL` there if yt-dlp should use a proxy. Do not put secret values in source files or chat.
 2. Add the bot as an administrator to `@Musiccommomru`. The bot checks channel membership and will not start unless it can access the channel.
 3. Run the **Telegram Music Bot** workflow. It starts `bot.py` and exposes a small health check on port `9000`.
 
@@ -30,6 +30,6 @@ The SQLite database is stored locally as `music_bot.sqlite3`. Keep a persistent 
 
 ## Replit uptime
 
-The health endpoint reports whether the process is running; it does not keep an Autoscale deployment awake. Replit's Reserved VM deployment is the option for a continuously running Telegram bot. The current project workflow is for development; it has not yet been set up as a published Reserved VM deployment.
+The project is configured for a Reserved VM deployment. Its production command runs the Telegram bot and API server together; the health endpoint reports process status but is not a keep-awake mechanism. The Reserved VM is not published yet—use Replit's Publish flow to start it.
 
 Use downloads only for material you own or have permission to download, and follow the source platform's terms.
